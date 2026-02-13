@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "x402-api-network": {
+      "command": "node",
+      "args": ["/opt/x402-api-network/mcp-server.js"],
+      "env": {
+        "X402_API_BASE": "http://localhost:4021"
+      }
+    }
+  }
+}
