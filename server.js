@@ -21,6 +21,7 @@ app.use((req, res, next) => {
 
 const PORT = process.env.PORT || 4021;
 const WALLET = process.env.WALLET_ADDRESS;
+const PRIVATE_KEY = process.env.WALLET_PRIVATE_KEY;
 const NETWORK = process.env.NETWORK || 'eip155:8453';
 
 // ============================================================
@@ -33,11 +34,49 @@ async function setupX402() {
   try {
     const { paymentMiddleware: pm, x402ResourceServer } = await import('@x402/express');
     const { ExactEvmScheme } = await import('@x402/evm/exact/server');
-    const { HTTPFacilitatorClient } = await import('@x402/core/server');
-    const { facilitator } = await import('@coinbase/x402');
     const { bazaarResourceServerExtension, declareDiscoveryExtension } = await import('@x402/extensions');
 
-    const facilitatorClient = new HTTPFacilitatorClient(facilitator);
+    let facilitatorClient;
+    const isTestnet = NETWORK.includes('84532') || NETWORK.includes('sepolia');
+
+    if (isTestnet) {
+      // Local facilitator for testnet — verifies and settles directly
+      const { x402Facilitator } = await import('@x402/core/facilitator');
+      const { registerExactEvmScheme: registerFacilitatorScheme } = await import('@x402/evm/exact/facilitator');
+      const { createWalletClient, createPublicClient, http } = await import('viem');
+      const { baseSepolia } = await import('viem/chains');
+      const { privateKeyToAccount } = await import('viem/accounts');
+
+      const account = privateKeyToAccount(PRIVATE_KEY);
+      const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http() });
+      const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
+
+      // Create a combined signer that has both wallet and public client methods
+      const signer = {
+        ...publicClient,
+        ...walletClient,
+        getAddresses: () => [account.address],
+        verifyTypedData: (params) => publicClient.verifyTypedData(params),
+        writeContract: (params) => walletClient.writeContract(params),
+        sendTransaction: (params) => walletClient.sendTransaction(params),
+        waitForTransactionReceipt: (params) => publicClient.waitForTransactionReceipt(params),
+        readContract: (params) => publicClient.readContract(params),
+        getCode: (params) => publicClient.getCode(params),
+      };
+
+      facilitatorClient = new x402Facilitator();
+      registerFacilitatorScheme(facilitatorClient, {
+        signer,
+        networks: [NETWORK],
+      });
+      console.log('  🧪 Using LOCAL facilitator (testnet mode)');
+    } else {
+      // Remote CDP facilitator for mainnet
+      const { HTTPFacilitatorClient } = await import('@x402/core/server');
+      const { facilitator } = await import('@coinbase/x402');
+      facilitatorClient = new HTTPFacilitatorClient(facilitator);
+      console.log('  🏦 Using CDP facilitator (mainnet mode)');
+    }
 
     const server = new x402ResourceServer(facilitatorClient)
       .register(NETWORK, new ExactEvmScheme())

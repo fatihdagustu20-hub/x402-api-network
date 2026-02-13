@@ -15,6 +15,7 @@
     "@x402/core": "latest",
     "@x402/evm": "latest",
     "@x402/express": "latest",
+    "@x402/fetch": "^2.3.0",
     "dns2": "^2.1.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
