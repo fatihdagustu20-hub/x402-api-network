@@ -19,10 +19,75 @@ app.use((req, res, next) => {
   next();
 });
 
+// Payment detection middleware — fires Telegram notification on successful paid requests
+app.use((req, res, next) => {
+  const hasPayment = req.headers['payment-signature'] || req.headers['x-payment'];
+  if (!hasPayment) return next();
+
+  const startTime = Date.now();
+  const origEnd = res.end;
+  res.end = function(...args) {
+    origEnd.apply(this, args);
+    if (res.statusCode === 200 && req.path.startsWith('/api/')) {
+      const price = getEndpointPrice(req.method, req.path);
+      const name = getEndpointName(req.method, req.path);
+      const ms = Date.now() - startTime;
+
+      // Update stats
+      const today = new Date().toISOString().slice(0, 10);
+      if (paymentStats.today !== today) { paymentStats.today = today; paymentStats.todayCount = 0; paymentStats.todayRevenue = 0; }
+      paymentStats.total++;
+      paymentStats.revenue += price;
+      paymentStats.todayCount++;
+      paymentStats.todayRevenue += price;
+
+      const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket?.remoteAddress || '?';
+      const msg = `💰 <b>x402 ÖDEME ALINDI!</b>\n\n` +
+        `📡 <b>${name}</b>\n` +
+        `💲 Tutar: <b>$${price.toFixed(4)} USDC</b>\n` +
+        `🔗 ${req.method} ${req.path}\n` +
+        `🌐 IP: <code>${ip}</code>\n` +
+        `⚡ ${ms}ms\n\n` +
+        `📊 Bugün: ${paymentStats.todayCount} ödeme ($${paymentStats.todayRevenue.toFixed(4)})\n` +
+        `📈 Toplam: ${paymentStats.total} ödeme ($${paymentStats.revenue.toFixed(4)})`;
+
+      sendTelegramNotification(msg);
+      console.log(`💰 Payment received: ${req.method} ${req.path} — $${price} USDC`);
+    }
+  };
+  next();
+});
+
 const PORT = process.env.PORT || 4021;
 const WALLET = process.env.WALLET_ADDRESS;
 const PRIVATE_KEY = process.env.WALLET_PRIVATE_KEY;
 const NETWORK = process.env.NETWORK || 'eip155:8453';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+// ============================================================
+// TELEGRAM PAYMENT NOTIFICATIONS
+// ============================================================
+
+let paymentStats = { total: 0, revenue: 0, today: new Date().toISOString().slice(0, 10), todayCount: 0, todayRevenue: 0 };
+
+async function sendTelegramNotification(message) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) { console.log('⚠️ Telegram not configured'); return; }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: message, parse_mode: 'HTML' }),
+    });
+    const data = await res.json();
+    if (data.ok) console.log('📨 Telegram notification sent');
+    else console.error('📨 Telegram API error:', JSON.stringify(data));
+  } catch (e) {
+    console.error('📨 Telegram fetch failed:', e.message);
+  }
+}
+
+// getEndpointPrice and getEndpointName are defined after API_ENDPOINTS/POST_ENDPOINTS below
 
 // ============================================================
 // x402 PAYMENT MIDDLEWARE
@@ -287,6 +352,19 @@ const POST_ENDPOINTS = {
     },
   },
 };
+
+function getEndpointPrice(method, path) {
+  const cleanPath = path.split('?')[0];
+  if (method === 'GET' && API_ENDPOINTS[cleanPath]) return parseFloat(API_ENDPOINTS[cleanPath].price.replace('$', ''));
+  if (method === 'POST' && POST_ENDPOINTS[cleanPath]) return parseFloat(POST_ENDPOINTS[cleanPath].price.replace('$', ''));
+  return 0;
+}
+
+function getEndpointName(method, path) {
+  const cleanPath = path.split('?')[0];
+  const config = API_ENDPOINTS[cleanPath] || POST_ENDPOINTS[cleanPath];
+  return config ? config.description.split('.')[0] : cleanPath;
+}
 
 // ============================================================
 // FREE DISCOVERY ENDPOINTS (no payment needed)
