@@ -10,6 +10,15 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// Dynamic payment middleware wrapper — must be BEFORE route definitions
+// so x402 can intercept requests and require payment
+app.use((req, res, next) => {
+  if (paymentMiddleware) {
+    return paymentMiddleware(req, res, next);
+  }
+  next();
+});
+
 const PORT = process.env.PORT || 4021;
 const WALLET = process.env.WALLET_ADDRESS;
 const NETWORK = process.env.NETWORK || 'eip155:8453';
@@ -1004,7 +1013,6 @@ async function main() {
   const x402Active = await setupX402();
 
   if (x402Active && paymentMiddleware) {
-    app.use(paymentMiddleware);
     console.log(`💰 x402 payments active on ${NETWORK}`);
     console.log(`💳 Payments go to: ${WALLET}`);
   } else {
